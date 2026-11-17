@@ -104,8 +104,14 @@ function resetFilters() {
   reload()
 }
 
-function exportRows() {
-  downloadEntries(meta.key)
+async function exportRows() {
+  errorMessage.value = ""
+  try {
+    const result = await downloadEntries(meta.key)
+    if (!result.ok) errorMessage.value = result.message
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message: "导出数据明细文件生成失败"
+  }
 }
 
 function openCreate() {

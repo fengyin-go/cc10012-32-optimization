@@ -55,6 +55,7 @@
             >
               {{ action }}
             </button>
+            <button class="link" type="button" @click="makeAttachment(row)">生成报告附件</button>
           </td>
         </tr>
         <tr v-if="!rows.length">
@@ -63,10 +64,55 @@
       </tbody>
     </table>
 
-    <footer class="page-foot">
-      <span>共 {{ total }} 条报告生成记录</span>
-      <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
-    </footer>
+    <!-- 报告附件：读取导出数据明细文件，通过行数与摘要校验后只保存附件摘要 -->
+    <article class="attachment-panel">
+      <header class="attachment-head">
+        <h3>报告附件摘要</h3>
+        <span class="attachment-hint">报告生成与导出入口共用同一份导出数据明细文件，截断数据无法成为附件</span>
+      </header>
+
+      <div class="attachment-source">
+        <label class="filter-item">
+          <span>来源导出数据明细文件</span>
+          <select v-model="sourceKey">
+            <option v-for="key in exportKeys" :key="key" :value="key">{{ key }}</option>
+          </select>
+        </label>
+        <button class="btn" type="button" @click="refreshSources">刷新来源列表</button>
+      </div>
+      <p v-if="!exportKeys.length" class="empty-state">
+        暂无可用的导出数据明细文件：请先到「数据导出」完成分批导出；中断或失败的文件不会出现在来源中，也无法生成附件。
+      </p>
+
+      <table v-if="attachments.length" class="data-table">
+        <thead>
+          <tr>
+            <th>附件编号</th><th>报告</th><th>来源明细文件</th><th>文件名</th>
+            <th>版本</th><th>逻辑行数</th><th>数据行数</th><th>字节数</th><th>附件摘要</th><th>生成时间</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="item in attachments" :key="item.id">
+            <td>{{ item.id }}</td>
+            <td>{{ item.reportName }}</td>
+            <td>{{ item.sourceExportKey }}</td>
+            <td>{{ item.filename }}</td>
+            <td>v{{ item.version }}</td>
+            <td>{{ item.lineCount }}</td>
+            <td>{{ item.dataRows }}</td>
+            <td>{{ item.byteLength }}</td>
+            <td><code>{{ item.digest }}</code></td>
+            <td>{{ item.createdAt }}</td>
+          </tr>
+        </tbody>
+      </table>
+      <p v-else class="empty-state">尚未生成附件摘要。点击报告行的「生成报告附件」，系统会先复核完整文件再保存摘要。</p>
+
+      <footer class="page-foot">
+        <span>共 {{ total }} 条报告生成记录</span>
+        <span v-if="errorMessage" class="error-text">{{ errorMessage }}</span>
+      </footer>
+    </article>
   </section>
 </template>
 
@@ -75,11 +121,15 @@ import { computed, onMounted, ref } from 'vue'
 
 import {
   downloadEntries,
+  generateReportAttachment,
+  listModuleExportKeys,
+  listReportAttachments,
   listEntries,
   moduleMeta,
   runAction as applyAction,
 } from '@/api/local-service'
 import type { EntryRow } from '@/data/types'
+import type { ReportAttachment } from '@/api/local-service'
 
 const meta = moduleMeta('reportgen')
 const columns = ["模板编号", "模板名称", "包含图表", "报告周期", "导出格式", "推送渠道", "水印开关", "附件压缩"]
@@ -99,13 +149,32 @@ const statusSummary = computed(() =>
   })),
 )
 
+const exportKeys = ref<string[]>([])
+const sourceKey = ref('')
+const attachments = ref<ReportAttachment[]>([])
+
+function refreshSources() {
+  exportKeys.value = listModuleExportKeys()
+  if (!sourceKey.value && exportKeys.value.length) sourceKey.value = exportKeys.value[0]
+}
+
+function refreshAttachments() {
+  attachments.value = listReportAttachments()
+}
+
 function resetFilters() {
   filters.value = {}
   reload()
 }
 
-function exportRows() {
-  downloadEntries(meta.key)
+async function exportRows() {
+  errorMessage.value = ''
+  try {
+    const result = await downloadEntries(meta.key)
+    if (!result.ok) errorMessage.value = result.message
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '导出数据明细文件生成失败'
+  }
 }
 
 function openCreate() {
@@ -122,6 +191,21 @@ function runAction(action: string, row: EntryRow) {
   reload()
 }
 
+function makeAttachment(row: EntryRow) {
+  errorMessage.value = ''
+  refreshSources()
+  if (!sourceKey.value) {
+    errorMessage.value = '没有可用的导出数据明细文件：请先在「数据导出」完成分批导出并通过完整性校验'
+    return
+  }
+  const result = generateReportAttachment(Number(row.id), String(row[columns[1]] ?? row.id), sourceKey.value)
+  if (!result.ok) {
+    errorMessage.value = result.message
+    return
+  }
+  refreshAttachments()
+}
+
 function reload() {
   errorMessage.value = ''
   try {
@@ -133,5 +217,37 @@ function reload() {
   }
 }
 
-onMounted(reload)
+onMounted(() => {
+  reload()
+  refreshSources()
+  refreshAttachments()
+})
 </script>
+
+<style scoped>
+.attachment-panel {
+  margin-top: 18px;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.attachment-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.attachment-head h3 { margin: 0; font-size: 16px; }
+.attachment-hint { color: var(--muted); font-size: 12px; }
+.attachment-source { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 12px; }
+.attachment-source select { min-width: 260px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  background: #eef2f7;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+</style>
